@@ -1,0 +1,32 @@
+# Данные и тяжелые файлы 
+data/*
+!data/**/.gitkeep
+*.csv 
+*.parquet 
+*.zip 
+*.tar.gz 
+
+# Весы моделей и временные артефакты 
+*.pkl 
+*.cbm 
+*.pt 
+*.bin 
+oof/ 
+fcst/ 
+
+# Исключения для папки model (сохраняем структуру, но игнорируем тяжелые весы) 
+model/* 
+!model/.gitkeep 
+!model/config.json 
+
+# Кэш Python и виртуальное окружение 
+__pycache__/ 
+*.pyc 
+.venv/ 
+venv/ 
+.ipynb_checkpoints/ 
+.pytest_cache/ 
+
+# Системные файлы 
+.DS\_Store 
+*.log
