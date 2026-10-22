@@ -138,8 +138,3 @@ def build_training_set(df, cutoff_date, h, max_days = None):
 
     y = np.log1p(merged["y"].to_numpy()) # log1p = log(1 + y), чтобы модель училась равномерно
     return X, y
-
-# df = pd.read_parquet("data/processed/train_full.parquet")
-# X, y = build_training_set(df, pd.Timestamp("2026-05-28"), 1, 180)
-
-# print("shape:", X.shape, y.shape) # (N, F)
