@@ -1,23 +1,13 @@
-"""Метрики хакатона на матрицах (дни x серии) + три фолда + проверка submission.
-SMAPE по п.5.5 ТЗ (подтверждено организаторами): дни 0-против-0 дают ошибку 0 и ОСТАЮТСЯ в среднем.
-В score.py из ТЗ это не так (mask = denominator > 0): там править."""
+"""Метрики хакатона на матрицах (недели x серии), недельная агрегация и проверка submission.
+SMAPE по п.5.5 ТЗ: точки 0-против-0 дают ошибку 0 и ОСТАЮТСЯ в среднем (совпадает с score.py из ТЗ)."""
 import numpy as np
 import pandas as pd
 
-PAIR = ["warehouse_name", "article"]
-W = dict(smape=.50, wape=.20, rmse=.15, bias=.10, rmsle=.05)
-HORIZON = 64
-
-# (конец обучения, начало проверки, конец проверки); каждое окно = ровно 64 дня
-FOLDS = {
-    "A": ("2026-05-28", "2026-05-29", "2026-07-31"),  # самые свежие данные
-    "B": ("2025-07-31", "2025-08-01", "2025-10-03"),  # тот же сезон, что и цель (2026-08-01..10-03)
-    "C": ("2026-02-28", "2026-03-01", "2026-05-03"),  # другой период
-}
+from src.config import FIRST_WEEK, FOLDS, PAIR, W, WEEKS
 
 
 def metrics(y, p):
-    """y, p: массивы (дни, серии). Возвращает 5 метрик."""
+    """y, p: массивы (недели, серии). Возвращает 5 метрик."""
     y, p = np.asarray(y, float), np.asarray(p, float)
     d = (np.abs(y) + np.abs(p)) / 2
     err = np.where(d == 0, 0.0, np.abs(y - p) / np.where(d == 0, 1, d)) * 100
@@ -33,28 +23,41 @@ def metrics(y, p):
 
 
 def score(m, base):
-    """min-max: 0 = идеал, 1 = наивный бейзлайн, хуже бейзлайна клиппится на 1."""
+    """min-max: 0 = идеал, 1 = наивный бейзлайн, хуже бейзлайна клиппится на 1. Финал у организаторов ранговый."""
     return sum(w * min(m[k] / base[k], 1) for k, w in W.items())
 
 
 def to_matrix(df, col="quantity"):
-    """Длинная таблица (date, склад, артикул, col) -> матрица (дни x серии), порядок серий = порядок появления."""
+    """Длинная таблица (date, склад, артикул, col) -> дневная матрица (дни x серии), порядок серий = порядок появления."""
     pid = df.groupby(PAIR, sort=False).ngroup().to_numpy()
     tid = (df.date - df.date.min()).dt.days.to_numpy()
     M = np.zeros((tid.max() + 1, pid.max() + 1), np.float32)
     M[tid, pid] = df[col].to_numpy()
     pairs = df.drop_duplicates(PAIR)[PAIR].reset_index(drop=True)
-    return M, pairs, pd.date_range(df.date.min(), periods=M.shape[0])
+    dates = pd.date_range(df.date.min(), periods=M.shape[0])
+    assert dates[0].weekday() == 0, "день 0 должен быть понедельником, иначе недели сдвинутся"
+    return M, pairs, dates
 
 
-def check_submission(sub, pairs, first_day, horizon=HORIZON):
-    """Проверка формата перед отправкой. pairs: таблица склад/артикул, first_day: первая дата прогноза."""
-    assert list(sub.columns[:4]) == ["date", "warehouse_name", "article", "quantity"], "колонки/порядок"
+def to_weeks(Y, a, b):
+    """Недельные суммы дней [a, b] (включительно) дневной матрицы. День 0 = понедельник, поэтому a % 7 == 0."""
+    assert a % 7 == 0 and (b - a + 1) % 7 == 0, "окно должно состоять из целых недель пн-вс"
+    return Y[a:b + 1].reshape(-1, 7, Y.shape[1]).sum(1)
+
+
+def load(path="train_full.parquet"):
+    """parquet -> (дневная матрица, пары, {дата: индекс дня})."""
+    Y, pairs, dates = to_matrix(pd.read_parquet(path, columns=["date", *PAIR, "quantity"]))
+    return Y, pairs, {d: i for i, d in enumerate(dates)}
+
+
+def check_submission(sub, pairs):
+    """Формат из п.4 ТЗ. pairs: таблица склад/артикул (эталонный набор)."""
+    assert list(sub.columns) == ["week", "warehouse_name", "article", "quantity"], "колонки/порядок"
     assert sub.quantity.notna().all() and (sub.quantity >= 0).all(), "NaN или отрицательные"
-    dates = pd.to_datetime(sub.date).drop_duplicates().sort_values()
-    assert len(dates) == horizon and (dates.diff().dropna() == pd.Timedelta(days=1)).all(), "даты"
-    assert dates.iloc[0] == pd.Timestamp(first_day), "первая дата прогноза"
-    assert len(sub) == len(pairs) * horizon and not sub.duplicated(["date"] + PAIR).any(), "число строк/дубли"
+    weeks = pd.to_datetime(sub.week).drop_duplicates().sort_values()
+    assert len(weeks) == WEEKS and (weeks.dt.day_of_week == 0).all(), "недели: 9 понедельников"    assert (weeks.diff().dropna() == pd.Timedelta(days=7)).all() and weeks.iloc[0] == pd.Timestamp(FIRST_WEEK), "шаг 7 дней, первая неделя"
+    assert len(sub) == len(pairs) * WEEKS and not sub.duplicated(["week"] + PAIR).any(), "число строк/дубли"
     assert len(sub[PAIR].drop_duplicates().merge(pairs)) == len(pairs), "набор пар"
     return True
 
@@ -69,8 +72,21 @@ def _test():
     z = metrics(y, np.zeros_like(y))
     assert abs(z["smape"] - 100) < 1e-9                    # a: 0 против 0 = 0 (п.5.5), b: 200 -> (0+200)/2
     for a, b, c in FOLDS.values():
-        assert (pd.Timestamp(c) - pd.Timestamp(b)).days + 1 == HORIZON
-        assert pd.Timestamp(a) + pd.Timedelta(days=1) == pd.Timestamp(b)
+        a, b, c = map(pd.Timestamp, (a, b, c))
+        assert a.weekday() == 6 and b.weekday() == 0 and c.weekday() == 6, "фолд: вс / пн / вс"
+        assert (c - b).days + 1 == 7 * WEEKS and a + pd.Timedelta(days=1) == b
+    Y = np.arange(28, dtype=float).reshape(14, 2)           # 2 недели x 2 серии
+    assert (to_weeks(Y, 0, 13) == [[Y[:7, 0].sum(), Y[:7, 1].sum()], [Y[7:, 0].sum(), Y[7:, 1].sum()]]).all()
+    pairs = pd.DataFrame({"warehouse_name": ["w1", "w1"], "article": ["a1", "a2"]})
+    weeks = pd.date_range(FIRST_WEEK, periods=WEEKS, freq="7D").strftime("%Y-%m-%d")
+    ok = pd.DataFrame({"week": np.repeat(weeks, 2), "warehouse_name": "w1", "article": ["a1", "a2"] * WEEKS, "quantity": 1.0})
+    assert check_submission(ok, pairs)
+    for bad in (ok.assign(quantity=-1.0), ok.iloc[:-1], ok.assign(week=ok.week.replace(FIRST_WEEK, "2026-07-28")), ok.assign(article="a1")):
+        try:
+            check_submission(bad, pairs)
+        except AssertionError:
+            continue
+        raise SystemExit("check_submission пропустил плохой файл")
     print("ok")
 
 

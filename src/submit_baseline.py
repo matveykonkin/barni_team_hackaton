@@ -1,4 +1,4 @@
-"""Черновой submission v0 по лучшему бейзлайну, обучение на всех данных.
+"""Черновой недельный submission по бейзлайну: обучение на данных до LAST_TRAIN_DAY включительно.
 Запуск:  python -m src.submit_baseline [train_full.parquet] [submission_v0.csv] [имя_бейзлайна]"""
 import sys
 
@@ -6,23 +6,23 @@ import numpy as np
 import pandas as pd
 
 from src.baselines import predictions
-from src.metrics import HORIZON, PAIR, check_submission, to_matrix
+from src.config import FIRST_WEEK, LAST_TRAIN_DAY, WEEKS
+from src.metrics import check_submission, load, to_weeks
 
 
-def main(path="data/processed/train_full.parquet", out="submission_v0.csv", name="sparse_mean28_t0.5"):
-    Y, pairs, dates = to_matrix(pd.read_parquet(path, columns=["date", *PAIR, "quantity"]))
-    p = predictions(Y, len(dates) - 1, dates[0].weekday())[name]          # (64, серии)
-    days = pd.date_range(dates[-1] + pd.Timedelta(days=1), periods=HORIZON)
-    S = len(pairs)
+def main(path="train_full.parquet", out="submission_v0.csv", name="sparse_mean4_t0.5"):
+    Y, pairs, idx = load(path)
+    P = predictions(to_weeks(Y, 0, idx[pd.Timestamp(LAST_TRAIN_DAY)]))[name]   # дни после 26 июля в обучение НЕ берём
+    weeks = pd.date_range(FIRST_WEEK, periods=WEEKS, freq="7D")
     sub = pd.DataFrame({
-        "date": np.repeat(days.strftime("%Y-%m-%d"), S),
-        "warehouse_name": np.tile(pairs.warehouse_name.to_numpy(), HORIZON),
-        "article": np.tile(pairs.article.to_numpy(), HORIZON),
-        "quantity": p.ravel(),
+        "week": np.repeat(weeks.strftime("%Y-%m-%d"), len(pairs)),
+        "warehouse_name": np.tile(pairs.warehouse_name.to_numpy(), WEEKS),
+        "article": np.tile(pairs.article.to_numpy(), WEEKS),
+        "quantity": P.ravel(),
     })
-    check_submission(sub, pairs, days[0])
+    check_submission(sub, pairs)
     sub.to_csv(out, index=False)
-    print(out, len(sub), "строк;", days[0].date(), "->", days[-1].date(), "| доля нулей:", round((sub.quantity == 0).mean(), 3))
+    print(out, len(sub), "строк;", sub.week.min(), "->", sub.week.max(), "| доля нулей:", round((sub.quantity == 0).mean(), 3))
 
 
 if __name__ == "__main__":
